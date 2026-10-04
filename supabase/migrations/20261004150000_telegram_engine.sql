@@ -214,16 +214,17 @@ begin
       if (r->'body'->'results'->0->>'status') = 'found' then
         return tg.save_found(p_contact_id, r->'body'->'results'->0->'user', v_src, v_phone);
       end if;
-    elsif coalesce(v_pid->>'enrich_status', '') in ('pending', 'processing', 'running', 'queued') then
-      if (c.tg_profile->>'tf_started_at')::timestamptz > now() - interval '48 hours' then
-        update contacts set tg_lookup_note = 'telefone achado; aguardando o Finder buscar o Telegram' where id = p_contact_id;
-        return 'aguardando o Finder (Telegram)';
-      end if;
-    elsif coalesce(v_pid->>'enrich_status', '') = '' then
+    elsif v_pid->>'enriched_at' is null and not (c.tg_profile ? 'tf_tg_started_at') then
+      -- o Finder só busca o Telegram do telefone quando é acionado (grátis no premium)
       perform tg.tf('POST', '/api/enrich/telegram', jsonb_build_object('id', v_pid->>'id'));
-      update contacts set tg_lookup_note = 'telefone achado; busca do Telegram iniciada no Finder' where id = p_contact_id;
+      update contacts set tg_lookup_note = 'telefone achado; busca do Telegram iniciada no Finder',
+             tg_profile = tg_profile || jsonb_build_object('tf_tg_started_at', now())
+      where id = p_contact_id;
       return 'busca do Telegram iniciada';
+    elsif v_pid->>'enriched_at' is null and (c.tg_profile->>'tf_tg_started_at')::timestamptz > now() - interval '24 hours' then
+      return 'aguardando o Finder (Telegram)';
     end if;
+    -- 'no_result' ou sem resposta em 24h: cai na busca pública abaixo e, sem nada, vira not_found
   else
     v_phone := c.phone;
     v_src := 'telegram_finder_phone';
