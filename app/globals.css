@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Paleta: neutros azulados + cobalto. Escuro segue o sistema. */
+:root {
+  --font-sans: "Archivo";
+  --font-mono: "JetBrains Mono";
+  --ground: 243 245 248;
+  --surface: 255 255 255;
+  --line: 217 223 231;
+  --ink: 18 24 38;
+  --muted: 90 101 119;
+  --accent: 43 77 217;
+  --ok: 20 128 74;
+  --warn: 163 90 0;
+  --bad: 180 35 24;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: 14 19 27;
+    --surface: 21 28 39;
+    --line: 40 51 69;
+    --ink: 230 235 242;
+    --muted: 154 166 184;
+    --accent: 125 149 255;
+    --ok: 76 195 138;
+    --warn: 240 179 90;
+    --bad: 242 122 110;
+    color-scheme: dark;
+  }
+}
+body { background: rgb(var(--ground)); color: rgb(var(--ink)); }
+.num { font-family: var(--font-mono), ui-monospace, monospace; font-variant-numeric: tabular-nums; }
