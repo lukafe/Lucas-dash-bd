@@ -28,9 +28,8 @@ insert into public.source_state (key, value) values
   ('tg_reverse_daily_max', '5')
 on conflict (key) do nothing;
 
-update public.channel_accounts
-set provider_account_id = 'eIezcuS3T2-Nxfx-7xdXFw', status = 'ok',
-    status_note = 'Unipile ok; @SpamBot sem restrição (confirmado pelo Lucas em 04/out)', updated_at = now()
+-- O status da conta (warming → ok) é a segunda trava do envio e fica com o Lucas.
+update public.channel_accounts set provider_account_id = 'eIezcuS3T2-Nxfx-7xdXFw', updated_at = now()
 where id = 'telegram:lucascecconn';
 
 -- Chamadas HTTP --------------------------------------------------------------------------
@@ -129,7 +128,7 @@ end $$;
 create or replace function tg.lookup_one(p_contact_id bigint)
 returns text language plpgsql security definer set search_path = public as $$
 declare
-  c record; r jsonb; u jsonb; v_phone text; v_tf text; v_ident jsonb; v_src text; v_credits int;
+  c record; r jsonb; u jsonb; v_phone text; v_tf text; v_ident jsonb; v_pid jsonb; v_src text;
 begin
   select ct.*, co.name as company_name into c
   from contacts ct left join companies co on co.id = ct.company_id where ct.id = p_contact_id;
@@ -144,51 +143,49 @@ begin
     end if;
   end if;
 
-  v_phone := c.phone;
-  v_src := 'telegram_finder_phone';
+  v_tf := c.tg_profile->>'tf_contact_id';
 
-  -- 2) reverso: email (depois LinkedIn) → telefone. Assíncrono no Finder ("enrichment initiated"):
-  --    esta rodada inicia; as próximas recolhem o telefone. 1 crédito só quando acha telefone.
-  if v_phone is null and coalesce((select value from source_state where key = 'tg_reverse_enabled'), 'false') = 'true'
+  -- 2) reverso no Finder (assíncrono): email/LinkedIn → telefone → Telegram. Esta rodada só inicia.
+  if v_tf is null and c.phone is null
+     and coalesce((select value from source_state where key = 'tg_reverse_enabled'), 'false') = 'true'
      and (c.email is not null or c.linkedin_url is not null) then
-    v_tf := c.tg_profile->>'tf_contact_id';
-    if v_tf is null then
-      -- teto nosso de buscas reversas iniciadas por dia (padrão 5)
-      if (select count(*) from contacts x where (x.tg_profile->>'tf_started_at')::timestamptz > now() - interval '1 day')
-         >= coalesce(nullif((select value from source_state where key = 'tg_reverse_daily_max'), '')::int, 5) then
-        return 'limite diário de busca reversa';
-      end if;
-      r := tg.tf('POST', '/api/contacts', jsonb_build_object('contacts', jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
-             'firstname', coalesce(nullif(c.first_name, ''), 'Unknown'), 'lastname', c.last_name, 'company', c.company_name,
-             'emails', case when c.email is not null then jsonb_build_array(c.email) end,
-             'linkedins', case when c.linkedin_url is not null then jsonb_build_array(c.linkedin_url) end)))));
-      v_tf := r->'body'->'contacts'->0->>'id';
-      if v_tf is null then
-        update contacts set tg_lookup_status = 'error', tg_lookup_at = now(),
-               tg_lookup_note = left('Finder (criar contato): ' || r::text, 300) where id = p_contact_id;
-        return 'erro no Finder';
-      end if;
-      r := tg.tf('GET', '/api/contacts/' || v_tf);
-      select e into v_ident from jsonb_array_elements(coalesce(r->'body'->'identifiers', '[]')) e
-      where e->>'type' in ('email', 'linkedin') order by (e->>'type') = 'linkedin' limit 1;
-      if v_ident is not null then
-        perform tg.tf('POST', '/api/enrich/phone', jsonb_build_object('id', v_ident->>'id'));
-      end if;
-      update contacts set tg_lookup_status = 'pending', tg_lookup_at = now(),
-             tg_lookup_note = 'aguardando o Finder achar o telefone',
-             tg_profile = coalesce(tg_profile, '{}') || jsonb_build_object(
-               'tf_contact_id', v_tf, 'tf_started_at', now(), 'tf_tried', jsonb_build_array(v_ident->>'type'))
-      where id = p_contact_id;
-      return 'busca reversa iniciada';
+    if (select count(*) from contacts x where (x.tg_profile->>'tf_started_at')::timestamptz > now() - interval '1 day')
+       >= coalesce(nullif((select value from source_state where key = 'tg_reverse_daily_max'), '')::int, 5) then
+      return 'limite diário de busca reversa';
     end if;
-
-    -- rodadas seguintes: recolhe o telefone, tenta o LinkedIn se o email não deu, desiste em 48h
+    r := tg.tf('POST', '/api/contacts', jsonb_build_object('contacts', jsonb_build_array(jsonb_strip_nulls(jsonb_build_object(
+           'firstname', coalesce(nullif(c.first_name, ''), 'Unknown'), 'lastname', c.last_name, 'company', c.company_name,
+           'emails', case when c.email is not null then jsonb_build_array(c.email) end,
+           'linkedins', case when c.linkedin_url is not null then jsonb_build_array(c.linkedin_url) end)))));
+    v_tf := r->'body'->'contacts'->0->>'id';
+    if v_tf is null then
+      update contacts set tg_lookup_status = 'error', tg_lookup_at = now(),
+             tg_lookup_note = left('Finder (criar contato): ' || r::text, 300) where id = p_contact_id;
+      return 'erro no Finder';
+    end if;
     r := tg.tf('GET', '/api/contacts/' || v_tf);
-    select e->>'value' into v_phone from jsonb_array_elements(coalesce(r->'body'->'identifiers', '[]')) e
-    where e->>'type' = 'phone' limit 1;
-    if v_phone is null then
+    select e into v_ident from jsonb_array_elements(coalesce(r->'body'->'identifiers', '[]')) e
+    where e->>'type' in ('email', 'linkedin') order by (e->>'type') = 'linkedin' limit 1;
+    if v_ident is not null then
+      perform tg.tf('POST', '/api/enrich/phone', jsonb_build_object('id', v_ident->>'id'));
+    end if;
+    update contacts set tg_lookup_status = 'pending', tg_lookup_at = now(),
+           tg_lookup_note = 'aguardando o Finder achar o telefone',
+           tg_profile = coalesce(tg_profile, '{}') || jsonb_build_object(
+             'tf_contact_id', v_tf, 'tf_started_at', now(), 'tf_tried', jsonb_build_array(v_ident->>'type'))
+    where id = p_contact_id;
+    return 'busca reversa iniciada';
+  end if;
+
+  -- rodadas seguintes: recolhe telefone e o Telegram que o próprio Finder busca a partir dele
+  if v_tf is not null then
+    r := tg.tf('GET', '/api/contacts/' || v_tf);
+    select e into v_pid from jsonb_array_elements(coalesce(r->'body'->'identifiers', '[]')) e
+    where e->>'type' = 'phone' order by (e->>'is_primary')::boolean desc nulls last limit 1;
+
+    if v_pid is null then
       if (c.tg_profile->>'tf_started_at')::timestamptz > now() - interval '6 hours' then
-        return 'aguardando o Finder';
+        return 'aguardando o Finder (telefone)';
       end if;
       select e into v_ident from jsonb_array_elements(coalesce(r->'body'->'identifiers', '[]')) e
       where e->>'type' = 'linkedin' and not ((c.tg_profile->'tf_tried') ? 'linkedin') limit 1;
@@ -204,15 +201,37 @@ begin
                tg_lookup_note = 'Finder não achou telefone pelo email/LinkedIn' where id = p_contact_id;
         return 'sem telefone';
       end if;
-      return 'aguardando o Finder';
+      return 'aguardando o Finder (telefone)';
     end if;
+
+    v_phone := v_pid->>'value';
     v_src := case when (c.tg_profile->'tf_tried') ? 'linkedin' then 'telegram_finder_linkedin' else 'telegram_finder_email' end;
     update contacts set phone = coalesce(phone, v_phone) where id = p_contact_id;
+
+    if jsonb_typeof(v_pid->'telegram') = 'object' and (v_pid->'telegram'->>'username') is not null then
+      r := tg.tf('POST', '/api/telegram/usernames',
+                 jsonb_build_object('usernames', jsonb_build_array(v_pid->'telegram'->>'username')));
+      if (r->'body'->'results'->0->>'status') = 'found' then
+        return tg.save_found(p_contact_id, r->'body'->'results'->0->'user', v_src, v_phone);
+      end if;
+    elsif coalesce(v_pid->>'enrich_status', '') in ('pending', 'processing', 'running', 'queued') then
+      if (c.tg_profile->>'tf_started_at')::timestamptz > now() - interval '48 hours' then
+        update contacts set tg_lookup_note = 'telefone achado; aguardando o Finder buscar o Telegram' where id = p_contact_id;
+        return 'aguardando o Finder (Telegram)';
+      end if;
+    elsif coalesce(v_pid->>'enrich_status', '') = '' then
+      perform tg.tf('POST', '/api/enrich/telegram', jsonb_build_object('id', v_pid->>'id'));
+      update contacts set tg_lookup_note = 'telefone achado; busca do Telegram iniciada no Finder' where id = p_contact_id;
+      return 'busca do Telegram iniciada';
+    end if;
+  else
+    v_phone := c.phone;
+    v_src := 'telegram_finder_phone';
   end if;
 
-  if v_phone is null then return 'nada para buscar ainda'; end if;  -- não marca: tenta de novo quando houver caminho
+  if v_phone is null then return 'nada para buscar ainda'; end if;
 
-  -- 3) telefone → Telegram, grátis (100/hora)
+  -- 3) busca pública pelo telefone (grátis, 100/hora): último recurso, e para pegar o id numérico
   r := tg.tf('POST', '/api/telegram', jsonb_build_object('phoneNumbers', jsonb_build_array(v_phone)));
   select value into u from jsonb_each(case when jsonb_typeof(r->'body') = 'object' then r->'body' else '{}'::jsonb end)
   where jsonb_typeof(value) = 'object' and value ? 'id' limit 1;
@@ -223,6 +242,25 @@ begin
   end if;
   return tg.save_found(p_contact_id, u, v_src, v_phone);
 end $$;
+
+-- Quem é decisor para o Telegram: fundadores, CEO, CTO, segurança/engenharia. Fora: ex-, assistentes,
+-- advisors e C-levels de outras áreas (CFO, jurídico, compliance, receita...)
+create or replace function tg.is_target(p_position text, p_role text) returns boolean language sql immutable as $$
+  select case
+    when coalesce(p_position, '') ~* '(assistant|\mex-|former|advisor|intern|marketing|sales|business development|community|recruit)' then false
+    when coalesce(p_position, '') ~* '(founder)' then true
+    when coalesce(p_position, '') ~* 'chief (financial|legal|compliance|revenue|growth|data|risk|administrative|people|marketing|research|product|operating|commercial|business|strategy|investment)' then false
+    when coalesce(p_position, '') ~* '(\mceo\M|chief executive|\mcto\M|chief technology|\mciso\M|chief information security|head of (security|engineering|technology|tech)|security)' then true
+    else coalesce(p_role, '') in ('founder_ceo', 'cto_tech', 'security') and coalesce(p_position, '') = ''
+  end
+$$;
+
+create or replace function tg.target_rank(p_position text) returns int language sql immutable as $$
+  select case
+    when coalesce(p_position, '') ~* '(founder|\mceo\M|chief executive)' then 1
+    when coalesce(p_position, '') ~* '(\mcto\M|chief technology|\mciso\M|security)' then 2
+    else 3 end
+$$;
 
 create or replace function tg.lookup_batch(p_limit int default 6)
 returns jsonb language plpgsql security definer set search_path = public as $$
@@ -238,15 +276,13 @@ begin
       and (ct.tg_lookup_status is null or ct.tg_lookup_status = 'pending')
       and coalesce(ct.stage, 'new') not in ('do_not_contact', 'replied')
       and coalesce(co.status, '') not in ('no_fit', 'no_domain') and co.account_state = 'active'
-      and (ct.role_level in ('founder_ceo', 'cto_tech', 'security')
-           or ct.position ~* '(founder|\mceo\M|\mcto\M|\mciso\M|chief|head of (security|engineering|technology|tech))')
-      and coalesce(ct.position, '') !~* '(marketing|sales|business development|community|advisor|intern|recruit)'
+      and tg.is_target(ct.position, ct.role_level)
       and (ct.tg_lookup_status = 'pending'
            or (select count(*) from contacts x where x.company_id = ct.company_id and x.tg_lookup_status in ('found', 'mismatch', 'pending')) < 3)
       and (ct.telegram_handle is not null or ct.phone is not null
            or (v_rev and (ct.email is not null or ct.linkedin_url is not null)))
-    order by (ct.tg_lookup_status = 'pending') desc nulls last, co.amount_usd desc nulls last, co.raise_date desc nulls last,
-             (ct.role_level = 'founder_ceo') desc nulls last, ct.id
+    order by (ct.tg_lookup_status = 'pending') desc nulls last, tg.target_rank(ct.position),
+             co.amount_usd desc nulls last, co.raise_date desc nulls last, ct.id
     limit p_limit
   loop
     begin
