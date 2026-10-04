@@ -9,6 +9,10 @@ as regras de acesso (RLS) só liberam leitura para o email dele.
 - Atividade de 30 dias, contas de envio, saúde do sistema (pipeline, rotinas e syncs), respostas classificadas,
   contas, últimos toques e fila de reativação.
 
+## Stack
+Next.js 16 (App Router) + React 19 + Tailwind 3 + `@supabase/ssr`, Node 20.9 ou mais novo. O login é checado em
+`proxy.js` (o antigo middleware) e de novo pelo RLS no banco.
+
 ## Rodar
 1. Variáveis (Vercel → Settings → Environment Variables), ver `.env.example`:
    `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` (chave pública; a chave secreta nunca vai para cá).

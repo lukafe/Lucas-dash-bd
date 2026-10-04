@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 const PUBLIC = ["/login", "/auth/callback"];
 
-export async function middleware(request) {
+export async function proxy(request) {
   let response = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
