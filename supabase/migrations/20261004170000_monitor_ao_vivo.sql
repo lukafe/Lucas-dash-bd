@@ -124,11 +124,15 @@ with base as (
   where s.source <> 'teste_permissao'
   group by s.source
   union all
+  -- jobs do pg_cron: falha antes de começar fica com start_time nulo (vai por último);
+  -- rodada ainda em andamento não conta como falha
   select 'cron:' || j.jobname, max(d.start_time),
-         bool_and(d.status = 'succeeded') filter (where d.start_time > now() - interval '24 hours'),
+         bool_and(d.status <> 'failed') filter (where d.start_time > now() - interval '24 hours'),
          (array_agg(case when d.status = 'succeeded' then 'rodou sem erro'
-                         else left(coalesce(d.return_message, d.status), 300) end order by d.start_time desc))[1],
-         (array_agg(d.status = 'succeeded' order by d.start_time desc))[1]
+                         when d.status in ('starting', 'running') then 'rodando agora'
+                         else left(coalesce(d.return_message, d.status), 300) end
+                    order by d.start_time desc nulls last))[1],
+         (array_agg(d.status <> 'failed' order by d.start_time desc nulls last))[1]
   from cron.job j
   left join cron.job_run_details d on d.jobid = j.jobid
   group by j.jobname
@@ -146,7 +150,7 @@ select coalesce(b.component, m.component) as component,
 from base b
 full join public.mon_cadence m on m.component = b.component
 where (m.component is not null and m.active)
-   or (m.component is null and b.last_at > now() - interval '24 hours');
+   or (m.component is null and (b.component like 'rotina:%' or b.last_at > now() - interval '24 hours'));
 
 -- 6) Contas de envio com o estado medido; aposentadas saem ------------------------------
 create or replace view public.v_account_usage with (security_invoker = on) as
@@ -175,6 +179,7 @@ declare
   v_tf_u jsonb; v_tf_r jsonb;
   v_gh text; v_resp extensions.http_response; w record; v_last timestamptz;
   v_errs text[] := '{}'; v_bits text[] := '{}'; v_late text[] := '{}'; v_sent text[] := '{}';
+  v_ghfail text[] := '{}';
 begin
   -- Unipile: conexão de cada conta (Telegram, LinkedIn)
   begin
@@ -268,24 +273,31 @@ begin
         if v_resp.status = 204 then
           v_sent := v_sent || w.workflow;
         else
+          v_ghfail := v_ghfail || format('%s (HTTP %s)', w.workflow, v_resp.status);
           v_errs := v_errs || format('GitHub %s: respondeu %s', w.workflow, v_resp.status);
         end if;
       end if;
     end loop;
     update integrations
-       set status = case when cardinality(v_late) > 0 then 'atencao' else 'ok' end,
-           note = case when v_gh is null and cardinality(v_late) > 0
+       set status = case when cardinality(v_ghfail) > 0 then 'erro'
+                         when cardinality(v_late) > 0 then 'atencao' else 'ok' end,
+           note = case when cardinality(v_ghfail) > 0
+                         then 'Não consegui religar: ' || array_to_string(v_ghfail, ', ') || ' (confira o token no Vault)'
+                       when v_gh is null and cardinality(v_late) > 0
                          then 'Atrasado: ' || array_to_string(v_late, ', ') || ' (sem token no Vault para religar sozinho)'
                        when v_gh is null then 'Agendador do GitHub em dia (sem token no Vault: só vigia)'
                        when cardinality(v_sent) > 0 then 'Religado agora: ' || array_to_string(v_sent, ', ')
                        else 'Agendador do GitHub em dia (vigia com token)' end,
-           data = jsonb_build_object('token', v_gh is not null, 'late', to_jsonb(v_late), 'dispatched', to_jsonb(v_sent)),
+           data = jsonb_build_object('token', v_gh is not null, 'late', to_jsonb(v_late),
+                                     'dispatched', to_jsonb(v_sent), 'failed', to_jsonb(v_ghfail)),
            checked_at = now()
      where id = 'github';
     if cardinality(v_sent) > 0 then v_bits := v_bits || ('GitHub religado: ' || array_to_string(v_sent, ', ')); end if;
     if cardinality(v_late) > 0 then v_bits := v_bits || ('GitHub atrasado: ' || array_to_string(v_late, ', ')); end if;
   exception when others then
     v_errs := v_errs || ('GitHub: ' || sqlerrm);
+    update integrations set status = 'erro', note = left('Falha no vigia: ' || sqlerrm, 200), checked_at = now()
+     where id = 'github';
   end;
 
   insert into sync_log (source, rows_affected, ok, error, detail)
@@ -309,8 +321,11 @@ stable
 security definer
 set search_path = public
 as $$
+declare
+  -- texto das conversas só para o dono logado; com o monitor aberto, o visitante vê só o aviso
+  v_owner boolean := public.is_dash_owner();
 begin
-  if not (public.is_dash_owner()
+  if not (v_owner
           or coalesce((select s.value from public.source_state s where s.key = 'dash_public'), 'false') = 'true') then
     raise exception 'acesso negado ao monitor' using errcode = '42501';
   end if;
@@ -329,7 +344,7 @@ begin
     -- Respostas: as classificadas pela rotina de catch-up e as que ainda esperam classificação
     -- (email com resposta no Apollo; última mensagem recebida em cada conversa do Telegram).
     'replies', coalesce((
-      select jsonb_agg(x.j order by x.at desc)
+      select jsonb_agg(x.j order by x.at desc nulls last)
       from (
         select y.j, y.at from (
           select jsonb_build_object(
@@ -345,26 +360,31 @@ begin
           left join public.companies co on co.id = coalesce(r.company_id, c.company_id)
 
           union all
-          select jsonb_build_object(
+          select e.j, e.at from (
+          select distinct on (o.contact_id)
+                 jsonb_build_object(
                    'id', 'o' || o.id, 'channel', 'email', 'class', null, 'is_decision_maker', null,
                    'summary', 'Respondeu ao email da sequência (abrir no Apollo)',
                    'link', case when c.apollo_id is not null then 'https://app.apollo.io/#/contacts/' || c.apollo_id end,
                    'received_at', o.replied_at, 'handled', false,
                    'contacts', jsonb_build_object('first_name', c.first_name, 'last_name', c.last_name, 'position', c.position),
-                   'companies', case when co.id is null then null else jsonb_build_object('name', co.name) end),
-                 o.replied_at
+                   'companies', case when co.id is null then null else jsonb_build_object('name', co.name) end) as j,
+                 o.replied_at as at
           from public.outreach o
           join public.contacts c on c.id = o.contact_id
           left join public.companies co on co.id = c.company_id
           where o.replied_at is not null
             and not exists (select 1 from public.replies r where r.contact_id = o.contact_id and r.channel = 'email')
+          order by o.contact_id, o.replied_at desc
+          ) e
 
           union all
           select z.j, z.at from (
             select distinct on (coalesce(t.contact_id::text, t.provider_chat_id, t.id::text))
                    jsonb_build_object(
                      'id', 't' || t.id, 'channel', 'telegram', 'class', null, 'is_decision_maker', null,
-                     'summary', left(t.body, 200), 'link', null, 'received_at', t.sent_at, 'handled', false,
+                     'summary', case when v_owner then left(t.body, 200) else 'Mensagem recebida no Telegram' end,
+                     'link', null, 'received_at', t.sent_at, 'handled', false,
                      'contacts', case when c.id is null then jsonb_build_object('first_name', t.target_name)
                                       else jsonb_build_object('first_name', c.first_name, 'last_name', c.last_name, 'position', c.position) end,
                      'companies', case when co.id is null then null else jsonb_build_object('name', co.name) end) as j,
@@ -385,10 +405,22 @@ begin
       ) x), '[]'::jsonb),
     'health', coalesce((select jsonb_agg(to_jsonb(h) order by h.sort, h.last_at desc nulls last) from public.v_health h), '[]'::jsonb),
     'channels', coalesce((select jsonb_agg(to_jsonb(u) order by u.id) from public.v_account_usage u), '[]'::jsonb),
-    'integrations', coalesce((select jsonb_agg(to_jsonb(i) order by i.sort) from public.integrations i), '[]'::jsonb),
+    -- só o que a página mostra (sem as respostas brutas das APIs)
+    'integrations', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', i.id, 'label', i.label, 'status', i.status, 'note', i.note, 'checked_at', i.checked_at,
+               'data', jsonb_build_object(
+                 'alerts', coalesce(i.data->'alerts', '[]'::jsonb),
+                 'sequences', coalesce((
+                   select jsonb_agg(jsonb_build_object('id', q->>'id', 'name', q->>'name', 'active', q->'active',
+                                                       'delivered', q->'delivered', 'replied', q->'replied',
+                                                       'bounced', q->'bounced', 'bounce_rate', q->'bounce_rate'))
+                   from jsonb_array_elements(coalesce(i.data->'sequences', '[]'::jsonb)) q), '[]'::jsonb)))
+             order by i.sort)
+      from public.integrations i), '[]'::jsonb),
     'synced', jsonb_build_object(
       'monitor', (select max(ran_at) from public.sync_log where source = 'monitor_refresh'),
-      'apollo', (select max(ran_at) from public.runs where step in ('sync_status', 'monitor_apollo')),
+      'apollo', (select max(ran_at) from public.runs where step = 'sync_status' and ok),
       'telegram', (select max(d.start_time) from cron.job j join cron.job_run_details d on d.jobid = j.jobid
                    where j.jobname = 'tg-sync-replies' and d.status = 'succeeded')),
     'state', coalesce((

@@ -106,8 +106,10 @@ function SyncStamp({ label, at, maxMinutes }) {
   );
 }
 
-/** Situação exibida da conta: o problema medido vence; senão vale a trava manual (status). */
+/** Situação exibida da conta. Ordem: bloqueio da trava de envio (restrita/pausada), depois o
+ *  problema medido na hora (erro, atenção), depois a trava em si (ok, não conectada…). */
 function accountState(a) {
+  if (a.status === "restricted" || a.status === "paused") return a.status;
   if (a.live_status === "erro" || a.live_status === "atencao") return a.live_status;
   return a.status;
 }
