@@ -86,8 +86,9 @@ begin
   foreach t in array array['personas', 'campaigns', 'channel_accounts', 'companies', 'contacts', 'touches',
                            'outreach', 'runs', 'routine_runs', 'sync_log', 'replies', 'daily_targets', 'source_state']
   loop
-    execute format('drop policy if exists dash_owner_read on public.%I', t);
-    execute format('create policy dash_owner_read on public.%I for select to authenticated using (public.is_dash_owner())', t);
+    if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = t and policyname = 'dash_owner_read') then
+      execute format('create policy dash_owner_read on public.%I for select to authenticated using (public.is_dash_owner())', t);
+    end if;
   end loop;
 end $$;
 
@@ -135,17 +136,20 @@ join public.companies co on co.id = c.company_id
 where c.next_touch_at is not null and c.stage not in ('do_not_contact')
 order by c.next_touch_at;
 
--- Contas abordadas com o estado atual
+-- Contas abordadas com o estado atual (agregados em subconsultas para não multiplicar linhas)
 create or replace view public.v_accounts with (security_invoker = on) as
 select co.id, co.name, co.category as round, co.stage_tier, co.amount_usd, co.account_state, co.created_at,
-       count(distinct c.id) as contacts,
-       count(distinct t.contact_id) filter (where t.direction = 'out') as people_reached,
-       count(*) filter (where t.channel = 'email' and t.direction = 'out') as emails,
-       count(*) filter (where t.channel = 'telegram' and t.direction = 'out') as telegrams,
-       count(*) filter (where t.status = 'replied') as replies,
-       count(*) filter (where t.status = 'bounced') as bounces,
-       max(t.sent_at) as last_touch
+       (select count(*) from public.contacts c where c.company_id = co.id) as contacts,
+       coalesce(t.people_reached, 0) as people_reached, coalesce(t.emails, 0) as emails,
+       coalesce(t.telegrams, 0) as telegrams, coalesce(t.replies, 0) as replies,
+       coalesce(t.bounces, 0) as bounces, t.last_touch
 from public.companies co
-left join public.contacts c on c.company_id = co.id
-left join public.touches t on t.company_id = co.id
-group by co.id;
+left join lateral (
+  select count(distinct tt.contact_id) filter (where tt.direction = 'out') as people_reached,
+         count(*) filter (where tt.channel = 'email' and tt.direction = 'out') as emails,
+         count(*) filter (where tt.channel = 'telegram' and tt.direction = 'out') as telegrams,
+         count(*) filter (where tt.status = 'replied') as replies,
+         count(*) filter (where tt.status = 'bounced') as bounces,
+         max(tt.sent_at) as last_touch
+  from public.touches tt where tt.company_id = co.id
+) t on true;
