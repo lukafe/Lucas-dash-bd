@@ -1,7 +1,11 @@
 # Lucas-dash-bd
 
-Monitor pessoal de BD do Lucas (CertiK). Lê o Supabase (projeto GTM-RAISE) com o login do próprio Lucas;
-as regras de acesso (RLS) só liberam leitura para o email dele.
+Monitor pessoal de BD do Lucas (CertiK). Lê o Supabase (projeto GTM-RAISE) pela função `dash_snapshot()`,
+que devolve só o que a página mostra; as tabelas seguem fechadas pelo RLS.
+
+**Hoje a página está aberta, sem login (decisão do Lucas, out/2026).** Para voltar a exigir login:
+1. Supabase: `update public.source_state set value = 'false' where key = 'dash_public';`
+2. Vercel: variável `DASH_REQUIRE_LOGIN=true` e Redeploy.
 
 ## v1: Aurora · Fundraising
 - Campanhas de email e Telegram: quota do dia, contas e pessoas abordadas, respostas, bounces, cadência.

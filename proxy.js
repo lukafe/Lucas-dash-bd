@@ -3,6 +3,9 @@ import { NextResponse } from "next/server";
 
 const PUBLIC = ["/login", "/auth/callback"];
 
+// Login desligado por enquanto (decisão do Lucas, out/2026). Para voltar a exigir, DASH_REQUIRE_LOGIN=true na Vercel.
+const REQUIRE_LOGIN = () => process.env.DASH_REQUIRE_LOGIN === "true";
+
 export async function proxy(request) {
   let response = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -25,7 +28,7 @@ export async function proxy(request) {
   } = await supabase.auth.getUser();
 
   const isPublic = PUBLIC.some((p) => request.nextUrl.pathname.startsWith(p));
-  if (!user && !isPublic) {
+  if (REQUIRE_LOGIN() && !user && !isPublic) {
     const login = request.nextUrl.clone();
     login.pathname = "/login";
     return NextResponse.redirect(login);
