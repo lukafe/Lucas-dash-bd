@@ -10,7 +10,11 @@ const TOUCH = {
   failed: ["Falhou", "bad"], queued: ["Na fila", "idle"], accepted: ["Aceitou", "ok"],
 };
 const CAMP = { live: ["No ar", "ok"], draft: ["Rascunho", "idle"], paused: ["Pausada", "warn"], done: ["Encerrada", "idle"] };
-const ACC = { ok: ["Ok", "ok"], warming: ["Aquecendo", "warn"], restricted: ["Restrita", "bad"], paused: ["Pausada", "warn"], not_connected: ["Não conectada", "idle"] };
+const ACC = {
+  ok: ["Ok", "ok"], warming: ["Aquecendo", "warn"], restricted: ["Restrita", "bad"], paused: ["Pausada", "warn"],
+  not_connected: ["Não conectada", "idle"], atencao: ["Atenção", "warn"], erro: ["Com erro", "bad"],
+};
+const INT = { ok: ["Ok", "ok"], atencao: ["Atenção", "warn"], erro: ["Com erro", "bad"] };
 const STATE = { active: ["Ativa", "acc"], paused: ["Pausada", "warn"], dormant: ["Dormente", "idle"], replied: ["Respondeu", "ok"], do_not_contact: ["Não contatar", "bad"] };
 const REPLY = {
   interessado: "Interessado", pediu_info: "Pediu info", indicou_outro: "Indicou outra pessoa", agora_nao: "Agora não",
@@ -84,6 +88,28 @@ function QuotaBar({ used, limit }) {
       </div>
     </div>
   );
+}
+
+/** "23:05" se for hoje (Xangai), "03/10, 19:36" se for outro dia. */
+function when(iso) {
+  if (!iso) return "–";
+  return dayKey(new Date(iso)) === dayKey(new Date()) ? fmt(iso, { hour: "2-digit", minute: "2-digit" }) : fmt(iso);
+}
+
+/** Horário de uma sincronização; fica amarelo quando passa do prazo esperado. */
+function SyncStamp({ label, at, maxMinutes }) {
+  const stale = !at || Date.now() - new Date(at).getTime() > maxMinutes * 60e3;
+  return (
+    <span className={stale ? "text-warn" : ""} title={stale ? `Mais de ${maxMinutes} min sem sincronizar` : undefined}>
+      {label} {when(at)}
+    </span>
+  );
+}
+
+/** Situação exibida da conta: o problema medido vence; senão vale a trava manual (status). */
+function accountState(a) {
+  if (a.live_status === "erro" || a.live_status === "atencao") return a.live_status;
+  return a.status;
 }
 
 function DailyChart({ rows }) {
@@ -292,6 +318,9 @@ export default async function Page({ searchParams }) {
   const totalAccounts = d.accounts.data.filter((a) => Number(a.people_reached) > 0).length;
   const sum = (k) => funnel.reduce((a, f) => a + Number(f[k] ?? 0), 0);
   const nowStr = fmt(new Date().toISOString(), { hour: "2-digit", minute: "2-digit" });
+  const apolloInt = d.integrations.data.find((i) => i.id === "apollo");
+  const apolloAlerts = apolloInt?.data?.alerts ?? [];
+  const latePieces = d.health.data.filter((h) => h.late);
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-7 px-4 py-6 sm:px-5">
@@ -302,7 +331,17 @@ export default async function Page({ searchParams }) {
           <p className="text-muted">Contas que captaram recentemente, abordadas por email em volume e por Telegram nos decisores.</p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted">
-          <span>Atualizado às {nowStr} (Xangai)</span>
+          <div className="flex flex-col items-end gap-0.5">
+            <span>Página gerada às {nowStr} (Xangai)</span>
+            <span className="flex flex-wrap justify-end gap-x-2">
+              <span>Sincronizado:</span>
+              <SyncStamp label="monitor" at={d.synced.monitor} maxMinutes={90} />
+              <span>·</span>
+              <SyncStamp label="Apollo" at={d.synced.apollo} maxMinutes={120} />
+              <span>·</span>
+              <SyncStamp label="Telegram" at={d.synced.telegram} maxMinutes={60} />
+            </span>
+          </div>
           {d.email && <form action="/auth/signout" method="post"><button className="rounded-lg border border-line px-3 py-1.5 hover:border-accent">Sair</button></form>}
         </div>
       </header>
@@ -313,10 +352,16 @@ export default async function Page({ searchParams }) {
         </p>
       )}
 
-      {(paused || bounce7 > 3) && (
+      {(paused || bounce7 > 3 || apolloAlerts.length > 0 || latePieces.length > 0) && (
         <div className="flex flex-col gap-2">
           {paused && <p className="rounded-lg bg-warn/10 p-3 text-sm text-warn">Inscrições novas no email estão pausadas. Quem já está na sequência continua recebendo os follow-ups.</p>}
           {bounce7 > 3 && <p className="rounded-lg bg-bad/10 p-3 text-sm text-bad">Bounce de email nos últimos 7 dias em {bounce7}%: acima do limite de 3%. O domínio certik.com fica em risco.</p>}
+          {apolloAlerts.map((a) => <p key={a} className="rounded-lg bg-warn/10 p-3 text-sm text-warn">Apollo: {a}.</p>)}
+          {latePieces.length > 0 && (
+            <p className="rounded-lg bg-warn/10 p-3 text-sm text-warn">
+              Atrasado: {latePieces.map((h) => `${h.label} (última ${when(h.last_at)})`).join(" · ")}. Detalhes em Saúde do sistema.
+            </p>
+          )}
         </div>
       )}
 
@@ -371,38 +416,71 @@ export default async function Page({ searchParams }) {
           <Table head={["Conta", "Situação", "Uso hoje"]} empty={!d.channels.data.length && !d.channels.error ? "Nenhuma conta cadastrada." : null}>
             {d.channels.data.map((a) => (
               <tr key={a.id}>
-                <td><div className="font-medium">{CH[a.channel] ?? a.channel} · {a.handle}</div><div className="text-xs text-muted">{a.status_note}</div></td>
-                <td><Pill map={ACC} k={a.status} /></td>
-                <td className="min-w-[110px]"><QuotaBar used={Number(a.sent_today ?? 0)} limit={a.daily_limit} /></td>
+                <td>
+                  <div className="font-medium">{CH[a.channel] ?? a.channel} · {a.handle}</div>
+                  <div className="text-xs text-muted">{a.live_note ?? a.status_note}</div>
+                  {a.status !== "ok" && a.status_note && a.live_note && <div className="text-xs text-warn">{a.status_note}</div>}
+                  {a.live_checked_at && <div className="text-[11px] text-muted">verificado {when(a.live_checked_at)}</div>}
+                </td>
+                <td><Pill map={ACC} k={accountState(a)} /></td>
+                <td className="min-w-[110px]"><QuotaBar used={Number(a.sent_today ?? 0)} limit={a.live_data?.daily_cap ?? a.daily_limit} /></td>
               </tr>
             ))}
           </Table>
         </Section>
       </div>
 
-      <Section title="Saúde do sistema" aside="Última execução de cada peça">
+      <Section title="Integrações" aside="Verificadas de hora em hora">
+        <SectionError error={d.integrations.error} />
+        <Table head={["Integração", "Situação", "Detalhe", "Verificado"]} empty={!d.integrations.data.length && !d.integrations.error ? "Nenhuma integração cadastrada." : null}>
+          {d.integrations.data.map((i) => (
+            <tr key={i.id}>
+              <td className="whitespace-nowrap font-medium">{i.label}</td>
+              <td>{i.status ? <Pill map={INT} k={i.status} /> : <span className="text-xs text-muted">aguardando</span>}</td>
+              <td className="text-xs">
+                <div>{i.note ?? "Ainda não verificada"}</div>
+                {(i.data?.sequences ?? []).map((s) => (
+                  <div key={s.id} className="text-muted">
+                    {s.name} · {s.active ? "ativa" : "desativada"} · <span className="num">{s.delivered}</span> entregues · <span className="num">{s.replied}</span> respostas · <span className="num">{s.bounced}</span> bounces ({Math.round((s.bounce_rate ?? 0) * 100)}%)
+                  </div>
+                ))}
+              </td>
+              <td className="num whitespace-nowrap text-xs">{when(i.checked_at)}</td>
+            </tr>
+          ))}
+        </Table>
+      </Section>
+
+      <Section title="Saúde do sistema" aside="Cada peça, quando deveria rodar e quando rodou">
         <SectionError error={d.health.error} />
-        <Table head={["Peça", "Última execução", "24h", "Detalhe"]} empty={!d.health.data.length && !d.health.error ? "Nenhuma execução registrada ainda." : null}>
+        <Table head={["Peça", "Frequência", "Última execução", "Situação", "Detalhe"]} empty={!d.health.data.length && !d.health.error ? "Nenhuma execução registrada ainda." : null}>
           {d.health.data.map((h) => (
             <tr key={h.component}>
-              <td className="whitespace-nowrap font-medium">{h.component}</td>
-              <td className="num whitespace-nowrap text-xs">{fmt(h.last_at)}</td>
-              <td>{h.ok_24h === null ? <span className="text-xs text-muted">sem execução</span> : <Pill map={{ t: ["Ok", "ok"], f: ["Falhou", "bad"] }} k={h.ok_24h ? "t" : "f"} />}</td>
+              <td><div className="font-medium">{h.label ?? h.component}</div><div className="text-[11px] text-muted">{h.component}</div></td>
+              <td className="whitespace-nowrap text-xs">{h.freq_label ?? "avulsa"}</td>
+              <td className="num whitespace-nowrap text-xs">{when(h.last_at)}</td>
+              <td>
+                {h.late ? <Pill map={{ x: ["Atrasada", "warn"] }} k="x" />
+                  : !h.last_at ? <span className="text-xs text-muted">ainda não rodou</span>
+                  : h.last_ok === false ? <Pill map={{ x: ["Falhou", "bad"] }} k="x" />
+                  : h.ok_24h === false ? <Pill map={{ x: ["Instável", "warn"] }} k="x" />
+                  : <Pill map={{ x: ["Ok", "ok"] }} k="x" />}
+              </td>
               <td className="max-w-[420px] truncate text-xs text-muted" title={h.last_detail ?? ""}>{h.last_detail}</td>
             </tr>
           ))}
         </Table>
       </Section>
 
-      <Section title="Respostas" aside="Classificadas pela rotina de catch-up">
+      <Section title="Respostas" aside="Email e Telegram · a classe vem da rotina de catch-up">
         <SectionError error={d.replies.error} />
-        <Table head={["Quando", "Quem", "Canal", "Classe", "Resumo"]} empty={!d.replies.data.length && !d.replies.error ? "Nenhuma resposta classificada ainda." : null}>
+        <Table head={["Quando", "Quem", "Canal", "Classe", "Resumo"]} empty={!d.replies.data.length && !d.replies.error ? "Nenhuma resposta ainda." : null}>
           {d.replies.data.map((r) => (
             <tr key={r.id}>
               <td className="num whitespace-nowrap text-xs">{fmt(r.received_at)}</td>
-              <td><div className="font-medium">{[r.contacts?.first_name, r.contacts?.last_name].filter(Boolean).join(" ") || "–"}</div><div className="text-xs text-muted">{r.companies?.name} · {r.contacts?.position}</div></td>
+              <td><div className="font-medium">{[r.contacts?.first_name, r.contacts?.last_name].filter(Boolean).join(" ") || "–"}</div><div className="text-xs text-muted">{[r.companies?.name, r.contacts?.position].filter(Boolean).join(" · ")}</div></td>
               <td>{CH[r.channel] ?? r.channel}</td>
-              <td>{REPLY[r.class] ?? r.class}{r.is_decision_maker ? <span className="ml-1 text-xs text-muted">· decisor</span> : null}</td>
+              <td>{r.class ? (REPLY[r.class] ?? r.class) : <Pill map={{ x: ["A classificar", "idle"] }} k="x" />}{r.is_decision_maker ? <span className="ml-1 text-xs text-muted">· decisor</span> : null}</td>
               <td className="text-xs">{r.link ? <a href={r.link} className="text-accent underline-offset-2 hover:underline" target="_blank" rel="noreferrer">{r.summary}</a> : r.summary}</td>
             </tr>
           ))}

@@ -9,9 +9,20 @@ que devolve só o que a página mostra; as tabelas seguem fechadas pelo RLS.
 
 ## v1: Aurora · Fundraising
 - Campanhas de email e Telegram: quota do dia, contas e pessoas abordadas, respostas, bounces, cadência.
-- Alertas: inscrições pausadas e bounce de email acima de 3% em 7 dias.
-- Atividade de 30 dias, contas de envio, saúde do sistema (pipeline, rotinas e syncs), respostas classificadas,
+- Alertas: inscrições pausadas, bounce de email acima de 3% em 7 dias, avisos do Apollo e peças atrasadas.
+- Calendário do mês e agenda de hoje + 7 dias (enviados, respostas, fila e previsto).
+- Atividade de 30 dias, contas de envio com o estado medido, integrações (Apollo, Telegram Finder, Unipile,
+  GitHub), saúde do sistema com frequência esperada e atraso, respostas (classificadas e a classificar),
   contas, últimos toques e fila de reativação.
+
+## Atualização de hora em hora
+- **Supabase (pg_cron `monitor-refresh`, minuto 5):** `mon.refresh()` confere a conexão das contas na Unipile,
+  os créditos do Telegram Finder e vigia o agendador do GitHub. Com o segredo `github_actions_token` no Vault,
+  religa sozinho o sync do Apollo (mais de 75 min parado) e a leitura do CryptoRank (mais de 150 min).
+- **GitHub Actions (`GPT_eng_CertiK_Raisefounds`, `sync.yml`, minuto 17):** sync de respostas e bounces do Apollo e
+  `monitor_refresh.py` (caixa, créditos e sequências do Apollo).
+- Nada disso inscreve contato, envia mensagem ou mexe em limite: a trava do Telegram continua em
+  `channel_accounts.status`; o estado medido fica nas colunas `live_*`.
 
 ## Stack
 Next.js 16 (App Router) + React 19 + Tailwind 3 + `@supabase/ssr`, Node 20.9 ou mais novo. O login é checado em
