@@ -1,5 +1,6 @@
 import { envProblem } from "@/lib/supabase-server";
 import { dayKey, fmt, loadDashboard } from "@/lib/data";
+import { category, isFuture, loadCalendar } from "@/lib/calendar";
 
 export const dynamic = "force-dynamic";
 
@@ -144,12 +145,145 @@ function DailyChart({ rows }) {
   );
 }
 
-export default async function Page() {
+
+// --- Calendário ---------------------------------------------------------------------------
+const CAT = {
+  first: { label: "1º contato", color: "rgb(var(--accent))" },
+  followup: { label: "Follow-up / reativação", color: "rgb(var(--warn))" },
+  reply: { label: "Resposta", color: "rgb(var(--ok))" },
+  bounce: { label: "Bounce", color: "rgb(var(--bad))" },
+};
+const EV_STATE = {
+  feito: ["Enviado", "acc"], fila: ["Na fila", "warn"], previsto: ["Previsto", "idle"],
+  resposta: ["Resposta", "ok"], bounce: ["Bounce", "bad"],
+};
+const KIND = { first: "1º contato", followup: "Follow-up", reactivation: "Reativação", reply: "Resposta" };
+const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
+const CHIP_ORDER = ["first|p", "followup|p", "reply|p", "bounce|p", "first|f", "followup|f"];
+
+function weekdayLabel(day) {
+  const d = new Date(Date.UTC(+day.slice(0, 4), +day.slice(5, 7) - 1, +day.slice(8, 10)));
+  return new Intl.DateTimeFormat("pt-BR", { weekday: "long", timeZone: "UTC" }).format(d);
+}
+
+function Dot({ cat, future }) {
+  const color = CAT[cat].color;
+  return (
+    <span className="inline-block h-2 w-2 shrink-0 rounded-full"
+      style={future ? { boxShadow: `inset 0 0 0 1.5px ${color}` } : { background: color }} />
+  );
+}
+
+function DayChips({ events }) {
+  const groups = {};
+  for (const e of events) (groups[`${category(e)}|${isFuture(e) ? "f" : "p"}`] ??= []).push(e);
+  return (
+    <div className="flex flex-wrap gap-x-2 gap-y-0.5">
+      {CHIP_ORDER.filter((k) => groups[k]).map((k) => {
+        const [cat, f] = k.split("|");
+        const list = groups[k];
+        const byCh = {};
+        for (const e of list) byCh[e.channel] = (byCh[e.channel] ?? 0) + 1;
+        const title = `${CAT[cat].label}${f === "f" ? " (na fila ou previsto)" : ""}: `
+          + Object.entries(byCh).map(([c, n]) => `${CH[c] ?? c} ${n}`).join(", ");
+        return (
+          <span key={k} title={title}
+            className={`num inline-flex items-center gap-1 text-[12px] ${f === "f" ? "text-muted" : "font-semibold"}`}>
+            <Dot cat={cat} future={f === "f"} />{list.length}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function Calendar({ cal }) {
+  return (
+    <div className="rounded-xl border border-line bg-surface p-3 sm:p-4">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <a href={`?m=${cal.prev}`} className="rounded-lg border border-line px-2.5 py-1 text-xs hover:border-accent">← anterior</a>
+        <div className="text-sm font-semibold capitalize">{cal.label}</div>
+        <a href={`?m=${cal.next}`} className="rounded-lg border border-line px-2.5 py-1 text-xs hover:border-accent">próximo →</a>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {WEEKDAYS.map((w) => (
+          <div key={w} className="pb-1 text-center text-[10px] font-semibold uppercase tracking-wider text-muted">{w}</div>
+        ))}
+        {cal.weeks.flat().map((c) => (
+          <div key={c.day}
+            className={`min-h-[58px] rounded-lg border p-1 sm:min-h-[74px] sm:p-1.5 ${c.isToday ? "border-accent" : "border-line"} ${c.inMonth ? "" : "opacity-40"}`}>
+            <div className={`num mb-1 text-[11px] ${c.isToday ? "font-semibold text-accent" : "text-muted"}`}>
+              {Number(c.day.slice(8))}
+            </div>
+            <DayChips events={c.events} />
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
+        {Object.entries(CAT).map(([k, v]) => (
+          <span key={k} className="flex items-center gap-1.5"><Dot cat={k} />{v.label}</span>
+        ))}
+        <span className="flex items-center gap-1.5"><Dot cat="first" future />vazado = na fila ou previsto</span>
+      </div>
+    </div>
+  );
+}
+
+function EventRow({ e }) {
+  const time = e.at && e.state !== "previsto" ? fmt(e.at, { hour: "2-digit", minute: "2-digit" }) : "—";
+  return (
+    <li className="flex flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-1.5 text-[13px]">
+      <span className="num w-10 shrink-0 text-xs text-muted">{time}</span>
+      <Pill map={EV_STATE} k={e.state} />
+      <span className="text-xs text-muted">{CH[e.channel] ?? e.channel} · {KIND[e.kind] ?? e.kind}</span>
+      <span className="font-medium">{e.name || "–"}</span>
+      {e.company && <span className="text-xs text-muted">{e.company}</span>}
+    </li>
+  );
+}
+
+function Agenda({ cal }) {
+  const today = cal.agenda[0];
+  const next = cal.agenda.slice(1).filter((a) => a.events.length);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-xl border border-line bg-surface">
+        <div className="flex items-baseline justify-between border-b border-line px-3 py-2">
+          <span className="text-[13px] font-semibold">Hoje</span>
+          <span className="text-xs text-muted">{today?.events.length ?? 0} evento(s)</span>
+        </div>
+        {today?.events.length
+          ? <ul className="max-h-[340px] divide-y divide-line overflow-y-auto">{today.events.map((e, i) => <EventRow key={i} e={e} />)}</ul>
+          : <p className="px-3 py-2 text-xs text-muted">Nada hoje.</p>}
+      </div>
+      <div className="rounded-xl border border-line bg-surface">
+        <div className="border-b border-line px-3 py-2 text-[13px] font-semibold">Próximos 7 dias</div>
+        {next.length === 0 && <p className="px-3 py-2 text-xs text-muted">Nada na fila nem previsto.</p>}
+        {next.map((a) => {
+          const shown = a.events.slice(0, 6);
+          return (
+            <div key={a.day} className="border-b border-line last:border-0">
+              <div className="flex items-baseline justify-between px-3 pt-2 text-xs">
+                <span className="font-semibold capitalize">{weekdayLabel(a.day)} <span className="num font-normal text-muted">{a.day.slice(8)}/{a.day.slice(5, 7)}</span></span>
+                <span className="text-muted">{a.events.length}</span>
+              </div>
+              <ul>{shown.map((e, i) => <EventRow key={i} e={e} />)}</ul>
+              {a.events.length > shown.length && <p className="px-3 pb-2 text-xs text-muted">+ {a.events.length - shown.length} no dia</p>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+export default async function Page({ searchParams }) {
   const problem = envProblem();
   if (problem) {
     return <main className="mx-auto max-w-3xl p-6"><p className="rounded-lg bg-warn/10 p-4 text-warn">{problem}</p></main>;
   }
-  const d = await loadDashboard();
+  const sp = (await searchParams) ?? {};
+  const [d, cal] = await Promise.all([loadDashboard(), loadCalendar(sp.m)]);
   const funnel = d.funnel.data;
   const email = funnel.find((f) => f.channel === "email" && f.status !== "draft") ?? funnel.find((f) => f.channel === "email");
   const tg = funnel.find((f) => f.channel === "telegram");
@@ -194,6 +328,15 @@ export default async function Page() {
         <Kpi value={sum("replied")} label="Respostas" tone="text-ok" />
         <Kpi value={`${email?.bounce_pct ?? 0}%`} label="Bounce do email (total)" tone={Number(email?.bounce_pct) > 3 ? "text-bad" : ""} />
       </section>
+
+      <Section title="Calendário" aside={`Telegram: envio ${cal.tgSendEnabled ? "ligado" : "desligado"} · até ${cal.tgQuota}/dia, 14h–23h`}>
+        <SectionError error={cal.error} />
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
+          <Calendar cal={cal} />
+          <Agenda cal={cal} />
+        </div>
+        <p className="text-xs text-muted">Follow-ups de email são estimados pela cadência da sequência no Apollo. Telegram previsto segue a fila do motor: cota diária, uma conta por dia, por ordem de prioridade.</p>
+      </Section>
 
       <Section title="Campanhas" aside="Cadência, quota e funil por canal">
         <SectionError error={d.funnel.error} />
