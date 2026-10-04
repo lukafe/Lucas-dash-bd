@@ -169,9 +169,15 @@ export default async function Page() {
         </div>
         <div className="flex items-center gap-3 text-xs text-muted">
           <span>Atualizado às {nowStr} (Xangai)</span>
-          <form action="/auth/signout" method="post"><button className="rounded-lg border border-line px-3 py-1.5 hover:border-accent">Sair</button></form>
+          {d.email && <form action="/auth/signout" method="post"><button className="rounded-lg border border-line px-3 py-1.5 hover:border-accent">Sair</button></form>}
         </div>
       </header>
+
+      {d.error && (
+        <p className="rounded-lg bg-bad/10 p-3 text-sm text-bad">
+          Não consegui ler os dados do Supabase: {d.error}
+        </p>
+      )}
 
       {(paused || bounce7 > 3) && (
         <div className="flex flex-col gap-2">
@@ -309,7 +315,10 @@ export default async function Page() {
         </Section>
       </div>
 
-      <footer className="pb-6 text-xs text-muted">Logado como {d.email}. Dados do Supabase, lidos com as regras de acesso do seu login.</footer>
+      <footer className="pb-6 text-xs text-muted">
+        {d.email ? `Logado como ${d.email}. ` : "Página aberta, sem login (temporário). "}
+        Dados do Supabase (projeto GTM-RAISE).
+      </footer>
     </main>
   );
 }
