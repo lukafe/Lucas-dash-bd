@@ -180,14 +180,15 @@ const CAT = {
   followup: { label: "Follow-up / reativação", color: "rgb(var(--warn))" },
   reply: { label: "Resposta", color: "rgb(var(--ok))" },
   bounce: { label: "Bounce", color: "rgb(var(--bad))" },
+  enrich: { label: "Empresas a enriquecer", color: "rgb(var(--muted))" },
 };
 const EV_STATE = {
   feito: ["Enviado", "acc"], fila: ["Na fila", "warn"], previsto: ["Previsto", "idle"],
   resposta: ["Resposta", "ok"], bounce: ["Bounce", "bad"],
 };
-const KIND = { first: "1º contato", followup: "Follow-up", reactivation: "Reativação", reply: "Resposta" };
+const KIND = { first: "1º contato", followup: "Follow-up", reactivation: "Reativação", reply: "Resposta", enrich: "Enriquecimento" };
 const WEEKDAYS = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"];
-const CHIP_ORDER = ["first|p", "followup|p", "reply|p", "bounce|p", "first|f", "followup|f"];
+const CHIP_ORDER = ["first|p", "followup|p", "reply|p", "bounce|p", "first|f", "followup|f", "enrich|f"];
 
 function weekdayLabel(day) {
   const d = new Date(Date.UTC(+day.slice(0, 4), +day.slice(5, 7) - 1, +day.slice(8, 10)));
@@ -211,13 +212,17 @@ function DayChips({ events }) {
         const [cat, f] = k.split("|");
         const list = groups[k];
         const byCh = {};
-        for (const e of list) byCh[e.channel] = (byCh[e.channel] ?? 0) + 1;
+        let n = 0;
+        for (const e of list) {
+          byCh[e.channel] = (byCh[e.channel] ?? 0) + (e.count ?? 1);
+          n += e.count ?? 1;
+        }
         const title = `${CAT[cat].label}${f === "f" ? " (na fila ou previsto)" : ""}: `
           + Object.entries(byCh).map(([c, n]) => `${CH[c] ?? c} ${n}`).join(", ");
         return (
           <span key={k} title={title}
             className={`num inline-flex items-center gap-1 text-[12px] ${f === "f" ? "text-muted" : "font-semibold"}`}>
-            <Dot cat={cat} future={f === "f"} />{list.length}
+            <Dot cat={cat} future={f === "f"} />{n}
           </span>
         );
       })}
@@ -376,13 +381,19 @@ export default async function Page({ searchParams }) {
         <Kpi value={`${email?.bounce_pct ?? 0}%`} label="Bounce do email (total)" tone={Number(email?.bounce_pct) > 3 ? "text-bad" : ""} />
       </section>
 
-      <Section title="Calendário" aside={`Telegram: envio ${cal.tgSendEnabled ? "ligado" : "desligado"} · até ${cal.tgQuota}/dia, 14h–23h`}>
+      <Section title="Calendário"
+        aside={`Email: ${cal.email.paused ? "pausado" : `até ${cal.email.cap}/dia`} · Telegram: envio ${cal.tgSendEnabled ? "ligado" : "desligado"}, até ${cal.tgQuota}/dia, 14h–23h`}>
         <SectionError error={cal.error} />
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
           <Calendar cal={cal} />
           <Agenda cal={cal} />
         </div>
-        <p className="text-xs text-muted">Follow-ups de email são estimados pela cadência da sequência no Apollo. Telegram previsto segue a fila do motor: cota diária, uma conta por dia, por ordem de prioridade.</p>
+        <p className="text-xs text-muted">
+          Email previsto: {cal.email.ready} contato(s) prontos entram na sequência até {cal.email.cap} por dia (no máximo 3 por empresa por dia), com os follow-ups da sequência;
+          {" "}{cal.email.queue} empresa(s) na fila são enriquecidas {cal.email.perDay} por dia e só viram contatos no dia do enriquecimento.
+          {" "}O Apollo manda o 1º email cerca de 30 min depois da entrada, no horário comercial do contato (seg a sex).
+          {" "}Telegram previsto segue a fila do motor: cota diária, uma conta por dia, por ordem de prioridade.
+        </p>
       </Section>
 
       <Section title="Campanhas" aside="Cadência, quota e funil por canal">
