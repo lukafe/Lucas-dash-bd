@@ -14,7 +14,7 @@ const ACC = {
   ok: ["Ok", "ok"], warming: ["Aquecendo", "warn"], restricted: ["Restrita", "bad"], paused: ["Pausada", "warn"],
   not_connected: ["Não conectada", "idle"], atencao: ["Atenção", "warn"], erro: ["Com erro", "bad"],
 };
-const INT = { ok: ["Ok", "ok"], atencao: ["Atenção", "warn"], erro: ["Com erro", "bad"] };
+const INT = { ok: ["Ok", "ok"], atencao: ["Atenção", "warn"], erro: ["Com erro", "bad"], desligado: ["Desligado", "idle"] };
 const STATE = { active: ["Ativa", "acc"], paused: ["Pausada", "warn"], dormant: ["Dormente", "idle"], replied: ["Respondeu", "ok"], do_not_contact: ["Não contatar", "bad"] };
 const REPLY = {
   interessado: "Interessado", pediu_info: "Pediu info", indicou_outro: "Indicou outra pessoa", agora_nao: "Agora não",
