@@ -318,11 +318,29 @@ export default async function Page({ searchParams }) {
   const sp = (await searchParams) ?? {};
   const [d, cal] = await Promise.all([loadDashboard(), loadCalendar(sp.m)]);
   const funnel = d.funnel.data;
-  const email = funnel.find((f) => f.channel === "email" && f.status !== "draft") ?? funnel.find((f) => f.channel === "email");
-  const tg = funnel.find((f) => f.channel === "telegram");
+  // Soma todas as campanhas vivas de cada canal (antes pegava só a primeira, e os emails
+  // de outras personas — ex.: parceiros de referral LATAM — ficavam fora dos números do topo).
+  const byChannel = (ch) => {
+    const rows = funnel.filter((f) => f.channel === ch && f.status !== "draft");
+    if (!rows.length) return null;
+    const t = (k) => rows.reduce((a, f) => a + Number(f[k] ?? 0), 0);
+    const sent = t("sent");
+    const sent7 = t("sent_7d");
+    const bounced = t("bounced");
+    const bounced7 = rows.reduce((a, f) => a + Number(f.sent_7d ?? 0) * Number(f.bounce_pct_7d ?? 0) / 100, 0);
+    return {
+      sent, sent_today: t("sent_today"), sent_7d: sent7, replied: t("replied"), bounced,
+      accounts_reached: t("accounts_reached"),
+      bounce_pct: sent ? (100 * bounced / sent).toFixed(1) : "0.0",
+      bounce_pct_7d: sent7 ? (100 * bounced7 / sent7).toFixed(1) : "0.0",
+    };
+  };
+  const email = byChannel("email");
+  const tg = byChannel("telegram");
   const paused = d.state.data.find((s) => s.key === "push_paused")?.value === "true";
   const bounce7 = Number(email?.bounce_pct_7d ?? 0);
-  const totalAccounts = d.accounts.data.filter((a) => Number(a.people_reached) > 0).length;
+  // A lista de contas vem limitada a 40 linhas; o total sai do funil (soma por campanha).
+  const totalAccounts = funnel.reduce((a, f) => a + Number(f.accounts_reached ?? 0), 0);
   const sum = (k) => funnel.reduce((a, f) => a + Number(f[k] ?? 0), 0);
   const nowStr = fmt(new Date().toISOString(), { hour: "2-digit", minute: "2-digit" });
   const apolloInt = d.integrations.data.find((i) => i.id === "apollo");
@@ -334,8 +352,8 @@ export default async function Page({ searchParams }) {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted">Aurora · CertiK New Business</div>
-          <h1 className="text-[26px] font-bold tracking-tight">Fundraising: email e Telegram</h1>
-          <p className="text-muted">Contas que captaram recentemente, abordadas por email em volume e por Telegram nos decisores.</p>
+          <h1 className="text-[26px] font-bold tracking-tight">Outreach: email e Telegram</h1>
+          <p className="text-muted">Todas as campanhas: fundraising (raises e ICO), parceiros de referral e demais personas, por email e Telegram.</p>
         </div>
         <div className="flex items-center gap-3 text-xs text-muted">
           <div className="flex flex-col items-end gap-0.5">
