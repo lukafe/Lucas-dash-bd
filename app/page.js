@@ -452,6 +452,14 @@ export default async function Page({ searchParams }) {
               <td>{i.status ? <Pill map={INT} k={i.status} /> : <span className="text-xs text-muted">aguardando</span>}</td>
               <td className="text-xs">
                 <div>{i.note ?? "Ainda não verificada"}</div>
+                {i.id === "apollo" && (i.data?.workspace || i.data?.current_sequence_id) && (
+                  <div className={i.data?.workspace?.ok === false ? "text-warn" : "text-muted"}>
+                    Workspace {i.data?.workspace?.label ?? i.data?.workspace?.team_id ?? "?"}
+                    {i.data?.mailbox_email ? <> · caixa {i.data.mailbox_email}</> : null}
+                    {" · "}inscrições em {i.data?.current_sequence_name ?? i.data?.current_sequence_id ?? "?"}
+                    {i.data?.current_sequence_id ? <span className="num"> ({i.data.current_sequence_id})</span> : null}
+                  </div>
+                )}
                 {(i.data?.sequences ?? []).map((s) => (
                   <div key={s.id} className="text-muted">
                     {s.name} · {s.active ? "ativa" : "desativada"} · <span className="num">{s.delivered}</span> entregues · <span className="num">{s.replied}</span> respostas · <span className="num">{s.bounced}</span> bounces ({Math.round((s.bounce_rate ?? 0) * 100)}%)
